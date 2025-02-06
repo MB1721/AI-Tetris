@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tetris with RxJS</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #000;
+        }
+        #game {
+            display: grid;
+            grid-template-rows: repeat(20, 20px);
+            grid-template-columns: repeat(10, 20px);
+            gap: 1px;
+        }
+        .cell {
+            width: 20px;
+            height: 20px;
+            background-color: #eee;
+        }
+        .active {
+            background-color: #f00;
+        }
+    </style>
+</head>
+<body>
+    <div id="game"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/rxjs/7.3.0/rxjs.umd.min.js"></script>
+    <script>
+        const { fromEvent, interval, merge } = rxjs;
+        const { map, scan, startWith, switchMap, takeWhile, withLatestFrom } = rxjs.operators;
+
+        const ROWS = 20;
+        const COLS = 10;
+        const TICK_INTERVAL = 500;
+        const gameElement = document.getElementById('game');
+
+        const createGrid = () => Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+        const render = (grid, active) => {
+            gameElement.innerHTML = '';
+            grid.forEach((row, rowIndex) => {
+                row.forEach((cell, colIndex) => {
+                    const div = document.createElement('div');
+                    div.classList.add('cell');
+                    if (active.some(([r, c]) => r === rowIndex && c === colIndex) || cell) {
+                        div.classList.add('active');
+                    }
+                    gameElement.appendChild(div);
+                });
+            });
+        };
+
+        const createPiece = () => {
+            return [
+                [0, 4], [0, 5], [1, 4], [1, 5]
+            ]; // A simple square piece
+        };
+
+        const movePiece = ( piece, [dx, dy]) => {
+            return piece.map(([r, c]) => [r + dx, c + dy]);
+        };
+
+        const piece$ = merge(
+            fromEvent(document, 'keydown').pipe(
+                map(event => {
+                    switch (event.code) {
+                        case 'ArrowLeft': return [0, -1];
+                        case 'ArrowRight': return [0, 1];
+                        case 'ArrowDown': return [1, 0];
+                        default: return [0, 0];
+                    }
+                }),
+                startWith([0, 0])
+            ),
+            interval(TICK_INTERVAL).pipe(map(() => [1, 0]))
+        ).pipe(
+            scan(movePiece, createPiece()),
+            startWith(createPiece())
+        );
+
+        const game$ = piece$.pipe(
+            scan((state, piece) => {
+                if (piece.some(([r, c]) => r >= ROWS || c < 0 || c >= COLS || state.grid[r][c])) {
+                    return { ...state, gameOver: true };
+                }
+                return { ...state, piece };
+            }, { grid: createGrid(), piece: [], gameOver: false }),
+            takeWhile(state => !state.gameOver),
+            switchMap(state =>
+                interval(TICK_INTERVAL).pipe(
+                    map(() => state),
+                    startWith(state)
+                )
+            )
+        );
+
+        game$.subscribe(state => render(state.grid, state.piece));
+    </script>
+</body>
+</html>

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RxJS Tetris</title>
+    <style>
+        canvas {
+            border: 2px solid black;
+            margin: 20px auto;
+            display: block;
+        }
+        .container {
+            text-align: center;
+            font-family: Arial, sans-serif;
+        }
+        .instructions {
+            margin: 20px;
+            text-align: left;
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>RxJS Tetris</h1>
+        <canvas id="tetris" width="300" height="600"></canvas>
+        <div class="instructions">
+            <h3>Controls:</h3>
+            <p>← Left Arrow: Move Left</p>
+            <p>→ Right Arrow: Move Right</p>
+            <p>↑ Up Arrow: Rotate</p>
+            <p>↓ Down Arrow: Move Down</p>
+        </div>
+    </div>
+
+    <!-- Import RxJS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/rxjs/7.8.1/rxjs.umd.min.js"></script>
+    
+    <script>
+        // Previous Tetris implementation goes here
+        const { fromEvent, interval, merge, BehaviorSubject } = rxjs;
+        const { map, filter, scan, takeWhile } = rxjs.operators;
+
+        // [Previous Tetris code goes here - copying it all to keep the artifact complete and runnable]
+        // Types and Constants
+        const BOARD_WIDTH = 10;
+        const BOARD_HEIGHT = 20;
+        const TICK_RATE_MS = 500;
+
+        // Tetromino shapes
+        const SHAPES = {
+            I: [[0,0], [0,1], [0,2], [0,3]],
+            O: [[0,0], [1,0], [0,1], [1,1]],
+            T: [[0,0], [-1,0], [1,0], [0,1]],
+            L: [[0,0], [0,1], [0,2], [1,2]],
+            J: [[0,0], [0,1], [0,2], [-1,2]],
+            S: [[0,0], [1,0], [0,1], [-1,1]],
+            Z: [[0,0], [-1,0], [0,1], [1,1]]
+        };
+
+        // Game actions
+        const createInitialState = () => ({
+            currentBlock: getRandomBlock(),
+            blocks: [],
+            score: 0,
+            gameOver: false
+        });
+
+        function getRandomBlock() {
+            const shapes = Object.values(SHAPES);
+            const randomShape = shapes[Math.floor(Math.random() * shapes.length)];
+            return randomShape.map(([x, y]) => ({
+                x: Math.floor(BOARD_WIDTH / 2) + x,
+                y: y
+            }));
+        }
+
+        function moveBlock(block, dx, dy) {
+            return block.map(pos => ({
+                x: pos.x + dx,
+                y: pos.y + dy
+            }));
+        }
+
+        function rotateBlock(block) {
+            const center = block[0];
+            return block.map(pos => ({
+                x: center.x - (pos.y - center.y),
+                y: center.y + (pos.x - center.x)
+            }));
+        }
+
+        function isValidPosition(block, blocks) {
+            return block.every(pos => 
+                pos.x >= 0 && 
+                pos.x < BOARD_WIDTH && 
+                pos.y >= 0 && 
+                pos.y < BOARD_HEIGHT &&
+                !blocks.some(b => b.some(p => p.x === pos.x && p.y === pos.y))
+            );
+        }
+
+        function removeCompletedRows(blocks) {
+            const rows = new Array(BOARD_HEIGHT).fill(0);
+            blocks.forEach(block => 
+                block.forEach(pos => rows[pos.y]++)
+            );
+            
+            const completedRows = rows
+                .map((count, idx) => ({ count, idx }))
+                .filter(row => row.count === BOARD_WIDTH)
+                .map(row => row.idx);
+
+            if (completedRows.length === 0) {
+                return { newBlocks: blocks, rowsCleared: 0 };
+            }
+
+            const newBlocks = blocks
+                .map(block => block.filter(pos => !completedRows.includes(pos.y)))
+                .filter(block => block.length > 0)
+                .map(block => block.map(pos => ({
+                    x: pos.x,
+                    y: pos.y + completedRows.filter(row => row > pos.y).length
+                })));
+
+            return { newBlocks, rowsCleared: completedRows.length };
+        }
+
+        function createTetrisGame(canvas) {
+            const gameState$ = new BehaviorSubject(createInitialState());
+
+            // User input streams
+            const keyDown$ = fromEvent(document, 'keydown');
+            
+            const moveLeft$ = keyDown$.pipe(
+                filter(event => event.key === 'ArrowLeft'),
+                map(() => (state) => {
+                    const newBlock = moveBlock(state.currentBlock, -1, 0);
+                    return isValidPosition(newBlock, state.blocks) 
+                        ? { ...state, currentBlock: newBlock }
+                        : state;
+                })
+            );
+
+            const moveRight$ = keyDown$.pipe(
+                filter(event => event.key === 'ArrowRight'),
+                map(() => (state) => {
+                    const newBlock = moveBlock(state.currentBlock, 1, 0);
+                    return isValidPosition(newBlock, state.blocks)
+                        ? { ...state, currentBlock: newBlock }
+                        : state;
+                })
+            );
+
+            const rotate$ = keyDown$.pipe(
+                filter(event => event.key === 'ArrowUp'),
+                map(() => (state) => {
+                    const newBlock = rotateBlock(state.currentBlock);
+                    return isValidPosition(newBlock, state.blocks)
+                        ? { ...state, currentBlock: newBlock }
+                        : state;
+                })
+            );
+
+            const moveDown$ = merge(
+                keyDown$.pipe(filter(event => event.key === 'ArrowDown')),
+                interval(TICK_RATE_MS)
+            ).pipe(
+                map(() => (state) => {
+                    const newBlock = moveBlock(state.currentBlock, 0, 1);
+                    
+                    if (!isValidPosition(newBlock, state.blocks)) {
+                        const newBlocks = [...state.blocks, state.currentBlock];
+                        const { newBlocks: clearedBlocks, rowsCleared } = removeCompletedRows(newBlocks);
+                        
+                        // Check for game over
+                        const nextBlock = getRandomBlock();
+                        if (!isValidPosition(nextBlock, clearedBlocks)) {
+                            return { ...state, gameOver: true };
+                        }
+
+                        return {
+                            currentBlock: nextBlock,
+                            blocks: clearedBlocks,
+                            score: state.score + (rowsCleared * 100),
+                            gameOver: false
+                        };
+                    }
+                    
+                    return { ...state, currentBlock: newBlock };
+                })
+            );
+
+            // Combine all game updates
+            merge(moveLeft$, moveRight$, rotate$, moveDown$)
+                .pipe(
+                    scan((state, reducer) => reducer(state), createInitialState())
+                )
+                .subscribe(gameState$);
+
+            // Render game
+            const ctx = canvas.getContext('2d');
+            const BLOCK_SIZE = 30;
+            
+            gameState$.subscribe(state => {
+                // Clear canvas
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Draw grid
+                ctx.strokeStyle = '#ccc';
+                for (let i = 0; i < BOARD_WIDTH; i++) {
+                    for (let j = 0; j < BOARD_HEIGHT; j++) {
+                        ctx.strokeRect(
+                            i * BLOCK_SIZE, 
+                            j * BLOCK_SIZE, 
+                            BLOCK_SIZE, 
+                            BLOCK_SIZE
+                        );
+                    }
+                }
+                
+                // Draw blocks
+                ctx.fillStyle = '#666';
+                state.blocks.forEach(block => 
+                    block.forEach(pos => {
+                        ctx.fillRect(
+                            pos.x * BLOCK_SIZE,
+                            pos.y * BLOCK_SIZE,
+                            BLOCK_SIZE - 1,
+                            BLOCK_SIZE - 1
+                        );
+                    })
+                );
+                
+                // Draw current block
+                ctx.fillStyle = '#000';
+                state.currentBlock.forEach(pos => {
+                    ctx.fillRect(
+                        pos.x * BLOCK_SIZE,
+                        pos.y * BLOCK_SIZE,
+                        BLOCK_SIZE - 1,
+                        BLOCK_SIZE - 1
+                    );
+                });
+                
+                // Draw score
+                ctx.fillStyle = '#000';
+                ctx.font = '20px Arial';
+                ctx.fillText(`Score: ${state.score}`, 10, canvas.height - 10);
+                
+                // Game over message
+                if (state.gameOver) {
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '40px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(
+                        'Game Over!', 
+                        canvas.width / 2, 
+                        canvas.height / 2
+                    );
+                }
+            });
+
+            return gameState$;
+        }
+
+        // Initialize the game when the page loads
+        window.onload = () => {
+            const canvas = document.getElementById('tetris');
+            const game = createTetrisGame(canvas);
+        };
+    </script>
+</body>
+</html>
